@@ -1,0 +1,43 @@
+
+library(wordcloud)
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(tm)
+library(tidytext)
+library(textdata)
+
+
+joblistings<- as.data.frame(readr::read_csv("https://raw.githubusercontent.com/joshuargst/607project3/master/joblistings.csv"))
+
+
+
+#extracting all description words into a vector
+descriptionwords <- joblistings$description %>% str_replace_all("^<[:graph:]*>$","")%>%
+  str_replace_all("\\\n"," ") %>%
+  str_replace_all("[^[:alpha:] ]"," ") %>% tolower()
+
+
+#pulling all individual words into a dataframe and counting
+word_counts <- as.data.frame(table(unlist(strsplit(descriptionwords, "\\s+") )))
+colnames(word_counts)<-c("word","Freq")
+
+
+#removing filler words and sentimental words
+word_counts <-anti_join(word_counts,get_stopwords())%>%
+  anti_join(get_sentiments())
+
+#removing noisy words with low counts for table reduction
+word_counts<-word_counts[word_counts$Freq>200,]
+
+
+
+#preliminary wordcloud
+wordcloud(words = word_counts$word, freq = word_counts$Freq, min.freq = 1,
+          max.words=200, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+
+
+
+
+
