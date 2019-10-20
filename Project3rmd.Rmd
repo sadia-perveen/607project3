@@ -1,0 +1,426 @@
+---
+title: "Project 3"
+author: "Joshua Registe, Uliana Plotnikova, Sadia Perveen, Jeyaraman Ramalingam"
+date: "10/20/2019"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    collapsed: false
+    number_sections: true
+---
+
+# Library Preparation
+
+```{r setup, message = FALSE}
+library(rvest)
+library(tidyverse)
+library(data.table)
+library(DT)
+library(magrittr)
+library(digest)
+
+library(RPostgreSQL)
+library(tidytext)
+library(config)
+library(tm)
+library(SnowballC)
+library(wordcloud)
+library(RColorBrewer)
+library(RCurl)
+library(XML)
+library(stringr)
+library(zoo)
+library(ggplot2)
+library(knitr)
+
+library(tidyr)
+library(dplyr)
+library(textdata)
+library(RMySQL)
+library(xml2)
+library(mapproj)
+library(ggmap)
+library(maps)
+```
+
+# Research Question
+
+The goal of this project is to answer the research question Which are the most valued data science skills?
+
+To obtain the latest available information about data science job postings we decided to scrap information from Indeed.com using various html nodes in the rvest package.
+The resulting dataset contains the following fields: job title, company, location, job summary, link and state.
+
+
+```{r }
+listings <- data.frame(title=character(),
+                       company=character(), 
+                       location=character(), 
+                       summary=character(), 
+                       link=character(), 
+                       description = character(),
+                       State = character(),
+                       stringsAsFactors=FALSE) 
+```
+
+# Web Scraping
+Web scraping was done with the following script that allowed all individuals to pull data from indeed.com. This specific script allowed for looping through all pages of indeed while applying a state query for searches specific to every state. This nested loop allowed for the extraction of job applications accross every state.
+
+```{r, eval=FALSE}
+Statenames<- state.name %>% str_replace_all(" ","\\+")
+varfunc <- function() {
+  read_html(url_ds)
+}
+
+for (j in 1:length(statenames)){
+for (i in seq(0, 990, 10)){
+
+  url_ds <- paste0('https://www.indeed.com/jobs?q=data+scientist&l=',statenames[j],'&start=',i)
+  #url_ds <- paste0('https://www.indeed.com/jobs?q=data+scientist&l=all&start=',i)
+  
+  var <- NULL
+  attempt <- 1
+  while( is.null(var) && attempt <= 3 ) {
+    attempt <- attempt + 1
+    try(
+      var <- varfunc()
+    )
+  } 
+  #var<- read_html("scrapedpage.html")
+
+#job title
+  title <-  var %>% 
+    html_nodes('#resultsCol .jobtitle') %>%
+    html_text() %>%
+    str_extract("(\\w+.+)+") 
+  
+  #company
+  company <- var %>% 
+    html_nodes('#resultsCol .company') %>%
+    html_text() %>%
+    str_extract("(\\w+).+") 
+  
+  #location
+  location <- var %>%
+    html_nodes('#resultsCol .location') %>%
+    html_text() %>%
+    str_extract("(\\w+.)+,.[A-Z]{2}")   
+  #summary
+  summary <- var %>%
+    html_nodes('#resultsCol .summary') %>%
+    html_text() %>%
+    str_extract(".+")
+  
+  #link
+  link <- var %>%
+    html_nodes('#resultsCol .jobtitle .turnstileLink, #resultsCol a.jobtitle') %>%
+    html_attr('href') 
+  link <- paste0("https://www.indeed.com",link)
+  
+  listingstemp <- data.frame(title=character(),
+                             company=character(), 
+                             location=character(), 
+                             summary=character(), 
+                             link=character(), 
+                             description = character(),
+                             State = character(),
+                             stringsAsFactors=FALSE) 
+  
+  listingstemp <- rbind(listingstemp, as.data.frame(cbind(title,
+                                                  company,
+                                                  location,
+                                                  summary,
+                                                  link)))
+  listingstemp$State = statenames[j]
+  listings<- bind_rows(listings,listingstemp)
+  
+}
+  #create a unique id for each job posting attribute combination
+  listings$uniqueid <- mapply(function(x, y, z) digest(paste0(x,y,z)), listings$title, listings$location, listings$company)
+  
+  #remove duplicate unique ids
+  listings %<>%
+    distinct(uniqueid, .keep_all = TRUE)
+  #remove duplicate links
+  listings %<>%
+    distinct(link, .keep_all = TRUE)
+
+}
+
+write.csv(listings, file = "joblistings.csv")
+#create a unique id for each job posting attribute combination
+listings$uniqueid <- mapply(function(x, y, z) digest(paste0(x,y,z)), listings$title, listings$location, listings$company)
+
+#remove duplicate unique ids
+listings %<>%
+  distinct(uniqueid, .keep_all = TRUE)
+#remove duplicate links
+listings %<>%
+  distinct(link, .keep_all = TRUE)
+datatable(listings)
+
+link[1]
+for (i in (1:length(listings$link))){
+  desciption <- tryCatch(
+    html_text(html_node(read_html(as.character(listings$link[i])),'.jobsearch-JobComponent-description')),
+    error=function(e){NA}
+  )
+  if (is.null(desciption)){
+    desc <- NA
+  }
+  listings$description[i] <- desciption
+}
+
+```
+
+# Storing in SQL Database
+A connection to a mysql database was established in order to store all data that was pulled from Indeed.com. This would allow for an organized central repository for all data that is collected for the group to extract, tidy and visualize.
+
+```{r, eval = FALSE}
+mydb = dbConnect(MySQL(), user='root', password='root', dbname='sys', host='localhost')
+joblistings_rs <- dbSendQuery(mydb,"select * from job_listings")
+joblistings = fetch(joblistings_rs,n=-1)
+```
+
+
+```{r,, eval = FALSE}
+for (i in (1:length(listings$link))){
+  desciption <- tryCatch(
+    html_text(html_node(read_html(as.character(listings$link[i])),'.jobsearch-JobComponent-description')),
+    error=function(e){NA}
+  )
+  if (is.null(desciption)){
+    desc <- NA
+  }
+  listings$description[i] <- desciption
+}
+
+table_listings <- data.table(joblistings)
+
+# Replacing single quotes with space
+table_listings$title <- str_replace_all(table_listings$title,"'","")
+table_listings$company <- str_replace_all(table_listings$company,"'","")
+table_listings$link <- str_replace_all(table_listings$link,"'","")
+table_listings$location <- str_replace_all(table_listings$location,"'","")
+table_listings$summary <- str_replace_all(table_listings$summary,"'","")
+table_listings$description <- str_replace_all(table_listings$description,"'","")
+
+#Conneciton to Mysql
+mydb = dbConnect(MySQL(), user='root', password='root', dbname='sys', host='localhost')
+
+#Delete Existing Records
+dbSendQuery(mydb,"delete from job_listings;")
+
+#Load Dataframe to mysql table
+for(i in 1:nrow(table_listings))
+{
+insert_query <- paste("INSERT INTO job_listings (X1,title,company,location,summary,link,description) VALUES ('",table_listings[i,1],"','",table_listings[i,2],"','",table_listings[i,3],"','",table_listings[i,4],"','",table_listings[i,5],"','",table_listings[i,6],"','",table_listings[i,7],"')") 
+dbSendQuery(mydb,insert_query)
+}
+#joblistings<- as.data.frame(readr::read_csv("https://raw.githubusercontent.com/joshuargst/607project3/master/joblistings.csv"))
+#Read Mysql Table into dataframe
+mydb = dbConnect(MySQL(), user='root', password='root', dbname='sys', host='localhost')
+joblistings_rs <- dbSendQuery(mydb,"select * from job_listings")
+joblistings = fetch(joblistings_rs,n=-1)
+
+```
+
+
+Data was also accessible via github through one of the group members accounts where each person could extract updated information. The extraction is shown below.
+```{r}
+joblistings<- as.data.frame(readr::read_csv("https://raw.githubusercontent.com/joshuargst/607project3/master/joblistings.csv"))
+```
+
+# Data Tidying
+After scraping all of the information from indeed and pulling this information from our database, we are able to begin tidying. We pulled descriptions from each individual link for every job posting leading to several megabytes of pure text data which contain a significant amount of noise in the form of punctuation, numbers, filler words, and sentimental words. The following script allows us to clean our descriptions from all of our >5000 job postings for later analysis.
+<br>
+<br>
+After cleaning, we can run a word cloud to get a general idea of how our most frequent words look as shown below.
+
+```{r}
+#extracting all description words into a vector
+descriptionwords <- joblistings$description %>% str_replace_all("^<[:graph:]*>$","")%>%
+  str_replace_all("\\\n"," ") %>%
+  str_replace_all("[^[:alpha:] ]"," ") %>% tolower()
+
+#pulling all individual words into a dataframe and counting
+word_counts <- as.data.frame(table(unlist(strsplit(descriptionwords, "\\s+"))))
+
+colnames(word_counts)<-c("word","Freq")
+
+
+#removing filler words and sentimental words
+word_counts <-anti_join(word_counts,get_stopwords())%>%
+  anti_join(get_sentiments())
+
+#removing noisy words with low counts for table Size reduction
+word_counts<-word_counts[word_counts$Freq>200,]
+
+
+#preliminary wordcloud
+wordcloud(words = word_counts$word, freq = word_counts$Freq, min.freq = 1,
+          max.words=200, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+```
+
+# Data Visualization
+We can examine our word cloud to extract information on soft skills and hard skills. Additional research to obtain information on hard skills and soft skills was done through various online articles and publications showing the different skillsets needed for datascience such as:
+<br>
+<https://icrunchdata.com/blog/564/the-hard-and-soft-skills-of-a-data-scientist/>
+<br>
+<https://towardsdatascience.com/soft-skills-will-make-or-break-you-as-a-data-scientist-7b9c8c47f9b>
+<br>
+<https://www.tableau.com/learn/articles/data-science-skills>
+<br>
+
+```{r}
+
+
+soft_skills <- c("understand","analytical","professional","management","team","leadership","business","driven","communication","lead","creative","interpersonal","flexible")
+
+
+
+hard_skills <- c("R", "PYTHON", "SQL", "JAVA","PERL","C","HADOOP","APACHE","ORACLE","SCALA","ACCESS", "SAS","LINUX", "AZURE", "EXCEL","Metlab","AWS","TABLEAU","SPARK","HIVE","GIS") %>%tolower()
+hard_skills.freq<-filter(word_counts, word %in% hard_skills)%>%
+  mutate(perc=Freq/sum(Freq))
+soft_skills.freq<-filter(word_counts, word %in% soft_skills)%>%
+  mutate(perc=Freq/sum(Freq))
+
+
+ggplot(hard_skills.freq, aes(x = reorder(toupper(word),-Freq), y = Freq, fill = Freq, label = scales::percent(perc))) + 
+  geom_col(position = 'dodge') + 
+  geom_text(position = position_dodge(width = .9),    # move to center of bars
+            vjust = -0.5,    # nudge above top of bar
+            size = 3) + 
+  theme(axis.text=element_text(angle=90))+  
+  labs(title = "Hard Skills Needed for Data Science",
+       x = "Frequency of Skill",
+       y = "Skill")
+
+
+ggplot(soft_skills.freq, aes(x = reorder(toupper(word),-Freq), y = Freq, fill = Freq, label = scales::percent(perc))) + 
+  geom_col(position = 'dodge') + 
+  geom_text(position = position_dodge(width = .9),    # move to center of bars
+            vjust = -0.5,    # nudge above top of bar
+            size = 3) + 
+  theme(axis.text=element_text(angle=90))+  
+  labs(title = "Soft Skills Needed for Data Science",
+       x = "Frequency of Skill",
+       y = "Skill")
+
+```
+
+Clearly we can see that some of the top technical skills include: R, Python and SQL. As for the soft skills, Business, teamwork, management, analytical thinking and communication were some of the top contendors. 
+<br>
+<br>
+Finally, we can do some additional data transformations to extract additional information from our database. Since all information was collected based on state specific querys on indeed.com, we can aggregate some of our top skills such as python, R and SQL and look at this information geographically on a state by state basis to see where some skills are focused more heavily than others. This is depicted in the figures below.
+ 
+```{r}
+
+{
+joblistingsLower<-joblistings
+joblistingsLower$description<-tolower(joblistings$description)
+}
+
+
+descriptionsbystate <-
+  joblistingsLower[c(7,8)] %>% group_by(State) %>%
+  mutate(description= paste(description, collapse = " ")) %>% unique()%>%ungroup()%>%mutate(abb = state.abb)
+
+HardSkillfreq_byState<-data.frame()
+for (i in 1:length(hard_skills)){
+HardSkillfreq_byState.temp<-data.frame()
+HardSkillfreq_byState.temp<-
+bind_rows(HardSkillfreq_byState.temp,data.frame(freq = str_count(descriptionsbystate$description,paste0("\\b",tolower(hard_skills[i]),"\\b"))))%>%
+bind_cols(HardSkillfreq_byState.temp,data.frame(State = state.name))%>%
+bind_cols(HardSkillfreq_byState.temp,data.frame(abb = state.abb))
+
+HardSkillfreq_byState.temp$Hard.Skill<-hard_skills[i]
+HardSkillfreq_byState<- bind_rows(HardSkillfreq_byState.temp,HardSkillfreq_byState)
+rm(HardSkillfreq_byState.temp)
+}
+
+HardSkillfreq_byState<-HardSkillfreq_byState%>%group_by(State)%>% mutate(percbystate=freq/sum(freq)) 
+
+
+
+
+HardSkillfreq_byState$State<-tolower(HardSkillfreq_byState$State)
+HardSkillfreq_byState<- right_join(state.fips,HardSkillfreq_byState)
+
+
+
+
+colors = c("#F1EEF6", "#D4B9DA", "#C994C7", "#DF65B0", "#DD1C77", 
+           "#980043")
+
+HardSkillfreq_byState$colorbuckets <- as.numeric(cut(HardSkillfreq_byState$percbystate, c(0, .05, .1, .15, .2, 
+                                                                                          .5, 1)))
+
+
+HardSkillfreq_byState2<- HardSkillfreq_byState %>%filter(Hard.Skill=="python")
+colorsmatched <- HardSkillfreq_byState2$colorbuckets[match(state.fips$abb, HardSkillfreq_byState2$abb)]
+
+map("state", col = colors[colorsmatched], fill = TRUE, resolution = 0, 
+    lty = 0, projection = "polyconic")
+
+map("state", col = "white", fill = FALSE, add = TRUE, lty = 1, lwd = 0.2, 
+    projection = "polyconic")
+title("Percent of Python in searches by State")
+leg.txt <- c("<0-5%", "5-10%", "10-15%", "15-20%", "20-50%", "50%")
+legend("bottom", leg.txt, horiz = TRUE, fill = colors)
+
+
+
+
+
+HardSkillfreq_byState2<- HardSkillfreq_byState %>%filter(Hard.Skill=="r")
+colorsmatched <- HardSkillfreq_byState2$colorbuckets[match(state.fips$abb, HardSkillfreq_byState2$abb)]
+
+map("state", col = colors[colorsmatched], fill = TRUE, resolution = 0, 
+    lty = 0, projection = "polyconic")
+
+map("state", col = "white", fill = FALSE, add = TRUE, lty = 1, lwd = 0.2, 
+    projection = "polyconic")
+title("Percent of R in searches by State")
+leg.txt <- c("<0-5%", "5-10%", "10-15%", "15-20%", "20-50%", "50%")
+legend("bottom", leg.txt, horiz = TRUE, fill = colors)
+
+
+HardSkillfreq_byState2<- HardSkillfreq_byState %>%filter(Hard.Skill=="sql")
+colorsmatched <- HardSkillfreq_byState2$colorbuckets[match(state.fips$abb, HardSkillfreq_byState2$abb)]
+
+map("state", col = colors[colorsmatched], fill = TRUE, resolution = 0, 
+    lty = 0, projection = "polyconic")
+
+map("state", col = "white", fill = FALSE, add = TRUE, lty = 1, lwd = 0.2, 
+    projection = "polyconic")
+title("Percent of SQL in searches by State")
+leg.txt <- c("<0-5%", "5-10%", "10-15%", "15-20%", "20-50%", "50%")
+legend("bottom", leg.txt, horiz = TRUE, fill = colors)
+
+
+```
+
+
+With this, at a quick glance we can notice that the states that focus heavily on certain skills are:
+<br> 
+Skill - Python 
+<br>
+Montana, Vermont and Maine
+<br>
+<br>
+Skill - R
+<br>
+Vermont, Maryland, and Rhode Island
+<br>
+<br>
+Skill - SQL
+<br>
+Nevada, Tennessee,Utah and Colorado
+
+
+
+
+
